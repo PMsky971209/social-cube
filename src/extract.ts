@@ -1,4 +1,9 @@
 import type { ProposedClaimInput } from "../types.ts";
+import {
+  extractClaimsQwen,
+  hasQwenCredentials,
+  QwenExtractError,
+} from "./extract-qwen.ts";
 
 export interface ExtractInput {
   person_id: string;
@@ -6,16 +11,24 @@ export interface ExtractInput {
   transcript_text: string;
 }
 
+export type ExtractorName = "qwen" | "mock";
+
+export interface ExtractResult {
+  claims: ProposedClaimInput[];
+  extractor: ExtractorName;
+}
+
 /**
  * Deterministic mock extractor — no API key.
- * Heuristics only; swap later for an LLM-backed implementation.
  */
 export function extractClaimsMock(input: ExtractInput): ProposedClaimInput[] {
   const text = input.transcript_text;
   const claims: ProposedClaimInput[] = [];
   const personId = input.person_id;
 
-  const commitMatch = text.match(/(.{0,12}(?:下周|明天|后天).{0,20}(?:发|给|交|送).{0,12})/);
+  const commitMatch = text.match(
+    /(.{0,12}(?:下周|明天|后天).{0,20}(?:发|给|交|送).{0,12})/,
+  );
   if (commitMatch) {
     const quote = commitMatch[1]!.trim();
     claims.push({
@@ -57,8 +70,9 @@ export function extractClaimsMock(input: ExtractInput): ProposedClaimInput[] {
 
   if (/挺顺|继续聊|合作愉快|老朋友/.test(text)) {
     const quote =
-      text.match(/(.{0,16}(?:挺顺|继续聊|合作愉快|老朋友).{0,16})/)?.[1]?.trim() ??
-      "语气偏熟络";
+      text
+        .match(/(.{0,16}(?:挺顺|继续聊|合作愉快|老朋友).{0,16})/)?.[1]
+        ?.trim() ?? "语气偏熟络";
     claims.push({
       person_id: personId,
       type: "relationship_temperature",
@@ -107,3 +121,40 @@ export function extractClaimsMock(input: ExtractInput): ProposedClaimInput[] {
 
   return claims;
 }
+
+function resolveExtractor(force?: string | null): ExtractorName {
+  const raw = (force ?? process.env.SOCIAL_CUBE_EXTRACTOR ?? "auto")
+    .trim()
+    .toLowerCase();
+  if (raw === "mock") return "mock";
+  if (raw === "qwen") return "qwen";
+  // auto
+  return hasQwenCredentials() ? "qwen" : "mock";
+}
+
+/**
+ * Prefer Qwen when DASHSCOPE_API_KEY is set; otherwise mock.
+ * Set SOCIAL_CUBE_EXTRACTOR=mock|qwen to force.
+ */
+export async function extractClaims(
+  input: ExtractInput,
+  opts: { force?: string | null; fetchImpl?: typeof fetch } = {},
+): Promise<ExtractResult> {
+  const extractor = resolveExtractor(opts.force);
+  if (extractor === "mock") {
+    return { claims: extractClaimsMock(input), extractor: "mock" };
+  }
+  try {
+    const claims = await extractClaimsQwen(input, {
+      fetchImpl: opts.fetchImpl,
+    });
+    return { claims, extractor: "qwen" };
+  } catch (err) {
+    if (err instanceof QwenExtractError) throw err;
+    throw new QwenExtractError(
+      err instanceof Error ? err.message : "Qwen extract failed",
+    );
+  }
+}
+
+export { hasQwenCredentials, QwenExtractError };

@@ -1,5 +1,8 @@
 import { createApp } from "../src/app.ts";
 import { openDb } from "../src/db.ts";
+import { extractClaims } from "../src/extract.ts";
+import { normalizeProposedClaims } from "../src/extract-validate.ts";
+
 
 async function req(
   app: ReturnType<typeof createApp>,
@@ -22,6 +25,36 @@ async function req(
 }
 
 async function main() {
+  // --- schema normalize (Qwen JSON shape) ---
+  const normalized = normalizeProposedClaims("p_x", {
+    claims: [
+      {
+        type: "commitment",
+        op: "add",
+        summary: "对方承诺下周发报价，这是一句很长很长会被截断的摘要文字多余部分",
+        payload: { text: "下周发报价", owner: "them", due_at: null },
+        evidence: { quote: "我下周把报价发你" },
+        tags: ["报价"],
+        confidence: 0.9,
+      },
+      { type: "stance", summary: "缺 payload", evidence: { quote: "x" } },
+    ],
+  });
+  if (normalized.length !== 1 || normalized[0]!.summary.length > 40) {
+    throw new Error("normalizeProposedClaims failed");
+  }
+
+  // --- force mock extract (no network) ---
+  process.env.SOCIAL_CUBE_EXTRACTOR = "mock";
+  const mock = await extractClaims({
+    person_id: "p_x",
+    person_display_name: "测试",
+    transcript_text: "我下周把报价发你。价格再看看。合作挺顺的。",
+  });
+  if (mock.extractor !== "mock" || mock.claims.length < 1) {
+    throw new Error("mock extractClaims failed");
+  }
+
   // --- seeded decide/brief path ---
   const seeded = createApp({ db: openDb(":memory:"), seed: true });
 

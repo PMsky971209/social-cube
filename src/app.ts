@@ -8,7 +8,7 @@ import type {
 } from "../types.ts";
 import { applyDecisions, buildPersonBrief, ClaimError } from "./claim-machine.ts";
 import { openDb, type Db } from "./db.ts";
-import { extractClaimsMock } from "./extract.ts";
+import { extractClaims, QwenExtractError } from "./extract.ts";
 import { Repo } from "./repo.ts";
 import { seedDemo } from "./seed.ts";
 import { newId, nowIso } from "./store.ts";
@@ -99,6 +99,9 @@ export function createApp(options: CreateAppOptions = {}): Hono {
         err.status as 400 | 404 | 409 | 500,
       );
     }
+    if (err instanceof QwenExtractError) {
+      return c.json({ error: err.message, extractor: "qwen" }, 502);
+    }
     if (err instanceof HTTPException) {
       return err.getResponse();
     }
@@ -107,7 +110,16 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   });
 
   app.get("/health", (c) =>
-    c.json({ ok: true, service: "social-cube", storage: "sqlite" }),
+    c.json({
+      ok: true,
+      service: "social-cube",
+      storage: "sqlite",
+      extractor:
+        process.env.SOCIAL_CUBE_EXTRACTOR?.trim() ||
+        (process.env.DASHSCOPE_API_KEY || process.env.SOCIAL_CUBE_QWEN_API_KEY
+          ? "qwen"
+          : "mock"),
+    }),
   );
 
   app.post("/v1/people", async (c) => {
@@ -191,13 +203,13 @@ export function createApp(options: CreateAppOptions = {}): Hono {
       throw new ClaimError("session has no transcript_text");
     }
 
-    const claims = extractClaimsMock({
+    const { claims, extractor } = await extractClaims({
       person_id: person.id,
       person_display_name: person.display_name,
       transcript_text: session.transcript_text,
     });
     const result = writeProposedClaims(repo, sessionId, claims);
-    return c.json({ ...result, extractor: "mock" }, 201);
+    return c.json({ ...result, extractor }, 201);
   });
 
   app.post("/v1/sessions/:session_id/extractions", async (c) => {
