@@ -1,9 +1,10 @@
 import type { Claim, Person, Session } from "../types.ts";
-import type { Confirmation, Store } from "./store.ts";
+import type { Repo } from "./repo.ts";
+import type { Confirmation } from "./store.ts";
 import { nowIso } from "./store.ts";
 
 /** Deterministic demo data so smoke tests are stable. */
-export function seedDemo(store: Store): void {
+export function seedDemo(repo: Repo): void {
   const created = nowIso();
 
   const zhang: Person = {
@@ -15,12 +16,14 @@ export function seedDemo(store: Store): void {
     updated_at: created,
   };
 
-  const session: Session = {
+  const session: Session & { transcript_text: string } = {
     id: "s_demo",
     started_at: "2026-11-12T02:00:00.000Z",
     ended_at: "2026-11-12T03:00:00.000Z",
     source: "qwen_earbuds",
-    transcript_ref: "demo://transcript/s_demo",
+    transcript_ref: "sqlite://sessions/s_demo",
+    transcript_text:
+      "我下周把报价发你。价格我再看看，可能要比两家。咱们合作挺顺的，下周继续聊。那个前任公司就算了，换个话题。",
     participant_person_ids: ["p_zhang"],
     status: "extracted",
     created_at: created,
@@ -98,8 +101,8 @@ export function seedDemo(store: Store): void {
     created_at: created,
   };
 
-  store.people.set(zhang.id, zhang);
-  store.sessions.set(session.id, session);
-  for (const claim of claims) store.claims.set(claim.id, claim);
-  store.confirmations.set(confirmation.id, confirmation);
+  repo.upsertPerson(zhang);
+  repo.upsertSession(session);
+  for (const claim of claims) repo.upsertClaim(claim);
+  repo.upsertConfirmation(confirmation);
 }

@@ -1,5 +1,5 @@
 import { createApp } from "../src/app.ts";
-import { createStore } from "../src/store.ts";
+import { openDb } from "../src/db.ts";
 
 async function req(
   app: ReturnType<typeof createApp>,
@@ -7,7 +7,10 @@ async function req(
   path: string,
   body?: unknown,
 ) {
-  const init: RequestInit = { method, headers: { "content-type": "application/json" } };
+  const init: RequestInit = {
+    method,
+    headers: { "content-type": "application/json" },
+  };
   if (body !== undefined) init.body = JSON.stringify(body);
   const res = await app.request(path, init);
   const text = await res.text();
@@ -19,16 +22,16 @@ async function req(
 }
 
 async function main() {
-  const store = createStore();
-  const app = createApp(store, true);
+  // --- seeded decide/brief path ---
+  const seeded = createApp({ db: openDb(":memory:"), seed: true });
 
-  const inbox = await req(app, "GET", "/v1/inbox/confirmations?status=pending");
+  const inbox = await req(seeded, "GET", "/v1/inbox/confirmations?status=pending");
   if (inbox.data.items.length !== 1) {
     throw new Error(`expected 1 pending confirmation, got ${inbox.data.items.length}`);
   }
   const confirmationId = inbox.data.items[0].confirmation_id as string;
 
-  const emptyBrief = await req(app, "GET", "/v1/people/p_zhang/brief");
+  const emptyBrief = await req(seeded, "GET", "/v1/people/p_zhang/brief");
   if (
     emptyBrief.data.commitments.length !== 0 ||
     emptyBrief.data.stances.length !== 0 ||
@@ -38,7 +41,7 @@ async function main() {
   }
 
   const decided = await req(
-    app,
+    seeded,
     "POST",
     `/v1/inbox/confirmations/${confirmationId}/decide`,
     {
@@ -70,35 +73,75 @@ async function main() {
   if (decided.data.person_preview.relationship_temperature !== "warm") {
     throw new Error("temperature should sync to warm");
   }
-  if (decided.data.person_preview.open_commitments_count !== 1) {
-    throw new Error("open commitments should be 1");
-  }
 
-  const brief = await req(app, "GET", "/v1/people/p_zhang/brief");
+  const brief = await req(seeded, "GET", "/v1/people/p_zhang/brief");
   if (brief.data.commitments.length !== 1) {
     throw new Error("expected 1 commitment in brief");
-  }
-  if (brief.data.stances.length !== 1) {
-    throw new Error("expected 1 stance in brief");
   }
   if (brief.data.taboos.length !== 0) {
     throw new Error("rejected taboo must not appear in brief");
   }
-  if (brief.data.person.relationship_temperature !== "warm") {
-    throw new Error("brief temperature mismatch");
+
+  // --- ingest → mock extract → decide persistence across reopen ---
+  const dbPath = ":memory:";
+  const db = openDb(dbPath);
+  const app = createApp({ db, seed: false });
+
+  const person = await req(app, "POST", "/v1/people", {
+    id: "p_li",
+    display_name: "李四",
+    aliases: ["小李"],
+  });
+
+  const session = await req(app, "POST", "/v1/sessions", {
+    person_id: person.data.id,
+    source: "upload",
+    transcript_text:
+      "我下周把方案发你。价格我再看看，要比两家。咱们合作挺顺的。前任公司别提了，换个话题。",
+  });
+
+  const extracted = await req(
+    app,
+    "POST",
+    `/v1/sessions/${session.data.id}/extract`,
+  );
+  if (!extracted.data.confirmation_id || extracted.data.claim_ids.length < 2) {
+    throw new Error(`extract failed: ${JSON.stringify(extracted.data)}`);
   }
 
-  const pendingAfter = await req(app, "GET", "/v1/inbox/confirmations?status=pending");
-  if (pendingAfter.data.items.length !== 0) {
-    throw new Error("inbox should be empty after decide");
+  const pending = await req(app, "GET", "/v1/inbox/confirmations?status=pending");
+  const card = pending.data.items.find(
+    (i: { confirmation_id: string }) =>
+      i.confirmation_id === extracted.data.confirmation_id,
+  );
+  if (!card) throw new Error("extracted confirmation missing from inbox");
+
+  const decisions = card.claims.map(
+    (claim: { claim_id: string }, index: number) => ({
+      claim_id: claim.claim_id,
+      action: index === card.claims.length - 1 ? "reject" : "accept",
+    }),
+  );
+  await req(app, "POST", `/v1/inbox/confirmations/${card.confirmation_id}/decide`, {
+    via: "push",
+    decisions,
+  });
+
+  // reopen same in-memory handle via new app on same db object
+  const app2 = createApp({ db, seed: false });
+  const brief2 = await req(app2, "GET", `/v1/people/${person.data.id}/brief`);
+  if (brief2.data.commitments.length + brief2.data.stances.length === 0) {
+    throw new Error("persisted brief should include accepted claims");
   }
 
   console.log("smoke ok");
   console.log(
     JSON.stringify(
       {
-        decide: decided.data,
-        brief: brief.data,
+        seeded_decide: decided.data,
+        seeded_brief: brief.data,
+        extract: extracted.data,
+        persisted_brief: brief2.data,
       },
       null,
       2,

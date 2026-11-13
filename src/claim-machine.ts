@@ -8,7 +8,8 @@ import type {
   RelationshipTemperature,
   RelationshipTemperaturePayload,
 } from "../types.ts";
-import type { Confirmation, Store } from "./store.ts";
+import type { Repo } from "./repo.ts";
+import type { Confirmation } from "./store.ts";
 import { nowIso } from "./store.ts";
 
 export class ClaimError extends Error {
@@ -30,12 +31,12 @@ function assertProposed(claim: Claim): void {
   }
 }
 
-function applySupersede(store: Store, claim: Claim): void {
+function applySupersede(repo: Repo, claim: Claim): void {
   if (!claim.replaces_claim_id) return;
-  const old = store.claims.get(claim.replaces_claim_id);
+  const old = repo.getClaim(claim.replaces_claim_id);
   if (old && (old.status === "accepted" || old.status === "edited")) {
     old.status = "superseded";
-    store.claims.set(old.id, old);
+    repo.upsertClaim(old);
   }
 }
 
@@ -49,23 +50,19 @@ function syncTemperature(person: Person, claim: Claim): void {
   person.relationship_temperature = payload.value;
 }
 
-function openCommitmentsCount(store: Store, personId: string): number {
-  let n = 0;
-  for (const claim of store.claims.values()) {
-    if (
-      claim.person_id === personId &&
-      claim.type === "commitment" &&
-      (claim.status === "accepted" || claim.status === "edited") &&
-      claim.op !== "retract"
-    ) {
-      n += 1;
-    }
-  }
-  return n;
+function openCommitmentsCount(repo: Repo, personId: string): number {
+  return repo
+    .listClaimsByPerson(personId)
+    .filter(
+      (claim) =>
+        claim.type === "commitment" &&
+        (claim.status === "accepted" || claim.status === "edited") &&
+        claim.op !== "retract",
+    ).length;
 }
 
 export function applyDecisions(
-  store: Store,
+  repo: Repo,
   confirmation: Confirmation,
   via: ConfirmVia,
   decisions: ClaimDecision[],
@@ -91,7 +88,7 @@ export function applyDecisions(
     }
     seen.add(decision.claim_id);
 
-    const claim = store.claims.get(decision.claim_id);
+    const claim = repo.getClaim(decision.claim_id);
     if (!claim) {
       throw new ClaimError(`Unknown claim ${decision.claim_id}`, 404);
     }
@@ -101,7 +98,7 @@ export function applyDecisions(
       claim.status = "rejected";
       claim.confirmed_at = decidedAt;
       claim.confirmed_via = via;
-      store.claims.set(claim.id, claim);
+      repo.upsertClaim(claim);
       rejected.push(claim.id);
       continue;
     }
@@ -130,26 +127,24 @@ export function applyDecisions(
 
     claim.confirmed_at = decidedAt;
     claim.confirmed_via = via;
-    applySupersede(store, claim);
+    applySupersede(repo, claim);
 
-    const person = store.people.get(claim.person_id);
+    const person = repo.getPerson(claim.person_id);
     if (!person) {
       throw new ClaimError(`Unknown person ${claim.person_id}`, 404);
     }
     syncTemperature(person, claim);
     person.updated_at = decidedAt;
-    store.people.set(person.id, person);
-    store.claims.set(claim.id, claim);
+    repo.upsertPerson(person);
+    repo.upsertClaim(claim);
     applied.push(claim.id);
   }
 
-  // Any undecided proposed claims in this confirmation stay proposed;
-  // mark confirmation decided once the user submitted a decide call.
   confirmation.status = "decided";
-  store.confirmations.set(confirmation.id, confirmation);
+  repo.upsertConfirmation(confirmation);
 
   const personId = confirmation.person_id;
-  const person = store.people.get(personId)!;
+  const person = repo.getPerson(personId)!;
 
   return {
     person_id: personId,
@@ -159,24 +154,25 @@ export function applyDecisions(
       relationship_temperature:
         (person.relationship_temperature as RelationshipTemperature | null) ??
         null,
-      open_commitments_count: openCommitmentsCount(store, personId),
+      open_commitments_count: openCommitmentsCount(repo, personId),
     },
   };
 }
 
 export function buildPersonBrief(
-  store: Store,
+  repo: Repo,
   personId: string,
 ): PersonBrief | null {
-  const person = store.people.get(personId);
+  const person = repo.getPerson(personId);
   if (!person) return null;
 
-  const live = [...store.claims.values()].filter(
-    (c) =>
-      c.person_id === personId &&
-      (c.status === "accepted" || c.status === "edited") &&
-      c.op !== "retract",
-  );
+  const live = repo
+    .listClaimsByPerson(personId)
+    .filter(
+      (c) =>
+        (c.status === "accepted" || c.status === "edited") &&
+        c.op !== "retract",
+    );
 
   const commitments = live
     .filter((c) => c.type === "commitment")
@@ -217,8 +213,7 @@ export function buildPersonBrief(
     });
 
   let lastSessionAt: string | null = null;
-  for (const session of store.sessions.values()) {
-    if (!session.participant_person_ids.includes(personId)) continue;
+  for (const session of repo.listSessionsForPerson(personId)) {
     if (!lastSessionAt || session.started_at > lastSessionAt) {
       lastSessionAt = session.started_at;
     }
