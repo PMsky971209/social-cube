@@ -1,0 +1,27 @@
+{
+  "name": "social-cube",
+  "version": "0.1.0",
+  "private": true,
+  "description": "社交魔方 — conversation → confirmed claims → pre-meeting brief",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "typecheck": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PMsky971209/social-cube.git"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@hono/node-server": "^2.1.8",
+    "hono": "^4.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
