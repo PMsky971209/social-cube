@@ -1,0 +1,490 @@
+openapi: 3.1.0
+info:
+  title: 社交魔方 — Person / Session / Claim API
+  version: 0.1.0
+  description: |
+    社交魔方（Shejiao Mofang）：cloud-first loop for conversation → claim diffs →
+    push confirm → pre-meeting brief. Confirmed Claims are the source of truth.
+    Offline is out of scope for v0.1.
+
+servers:
+  - url: https://api.example.com/v1
+    description: Placeholder
+
+tags:
+  - name: sessions
+  - name: inbox
+  - name: people
+
+paths:
+  /sessions/{session_id}/extractions:
+    post:
+      tags: [sessions]
+      summary: Attach proposed claims for a session and open a confirmation
+      operationId: createSessionExtraction
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateExtractionRequest"
+            example:
+              claims:
+                - person_id: p_123
+                  type: commitment
+                  op: add
+                  summary: 对方承诺下周发报价
+                  payload:
+                    text: 下周发报价
+                    due_at: "2026-11-20T00:00:00+08:00"
+                    owner: them
+                  evidence:
+                    quote: 我下周把报价发你
+                    t_start: 312.5
+                  tags: [报价, 下周, 对方承诺]
+                  confidence: 0.82
+      responses:
+        "201":
+          description: Proposed claims created; push confirmation enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateExtractionResponse"
+
+  /inbox/confirmations:
+    get:
+      tags: [inbox]
+      summary: List pending push confirmation cards
+      operationId: listConfirmations
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, decided]
+            default: pending
+      responses:
+        "200":
+          description: Confirmation inbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListConfirmationsResponse"
+
+  /inbox/confirmations/{confirmation_id}/decide:
+    post:
+      tags: [inbox]
+      summary: Accept, edit, or reject claims (push or voice share this shape)
+      operationId: decideConfirmation
+      parameters:
+        - $ref: "#/components/parameters/ConfirmationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideConfirmationRequest"
+            example:
+              via: push
+              decisions:
+                - claim_id: c_1
+                  action: accept
+                  selected_tags: [报价, 下周]
+                - claim_id: c_2
+                  action: edit
+                  selected_tags: [偏谨慎]
+                  patch:
+                    summary: 对方对价格偏谨慎
+                    payload:
+                      topic: 价格
+                      position: 偏谨慎、要再比两家
+                - claim_id: c_3
+                  action: reject
+      responses:
+        "200":
+          description: Decisions applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecideConfirmationResponse"
+
+  /people/{person_id}/brief:
+    get:
+      tags: [people]
+      summary: Pre-meeting one-screen brief (confirmed claims only)
+      operationId: getPersonBrief
+      parameters:
+        - $ref: "#/components/parameters/PersonId"
+      responses:
+        "200":
+          description: Brief ordered commitments → stances → temperature → taboos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonBrief"
+
+components:
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ConfirmationId:
+      name: confirmation_id
+      in: path
+      required: true
+      schema:
+        type: string
+    PersonId:
+      name: person_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    RelationshipTemperature:
+      type: string
+      enum: [cold, cool, neutral, warm, close]
+
+    ClaimType:
+      type: string
+      enum:
+        - commitment
+        - stance
+        - relationship_temperature
+        - taboo
+
+    ClaimOp:
+      type: string
+      enum: [add, update, retract]
+
+    ConfirmVia:
+      type: string
+      enum: [push, voice, app]
+
+    DecisionAction:
+      type: string
+      enum: [accept, edit, reject]
+
+    CommitmentOwner:
+      type: string
+      enum: [me, them, both]
+
+    ClaimEvidence:
+      type: object
+      required: [quote]
+      properties:
+        quote:
+          type: string
+        t_start:
+          type: number
+          nullable: true
+        t_end:
+          type: number
+          nullable: true
+
+    CommitmentPayload:
+      type: object
+      required: [text, owner]
+      properties:
+        text:
+          type: string
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        owner:
+          $ref: "#/components/schemas/CommitmentOwner"
+
+    StancePayload:
+      type: object
+      required: [topic, position]
+      properties:
+        topic:
+          type: string
+        position:
+          type: string
+
+    RelationshipTemperaturePayload:
+      type: object
+      required: [value]
+      properties:
+        value:
+          $ref: "#/components/schemas/RelationshipTemperature"
+        note:
+          type: string
+          nullable: true
+
+    TabooPayload:
+      type: object
+      required: [topic]
+      properties:
+        topic:
+          type: string
+        note:
+          type: string
+          nullable: true
+
+    ClaimPayload:
+      oneOf:
+        - $ref: "#/components/schemas/CommitmentPayload"
+        - $ref: "#/components/schemas/StancePayload"
+        - $ref: "#/components/schemas/RelationshipTemperaturePayload"
+        - $ref: "#/components/schemas/TabooPayload"
+
+    ProposedClaimInput:
+      type: object
+      required: [person_id, type, op, summary, payload, evidence]
+      properties:
+        person_id:
+          type: string
+        type:
+          $ref: "#/components/schemas/ClaimType"
+        op:
+          $ref: "#/components/schemas/ClaimOp"
+        summary:
+          type: string
+          maxLength: 40
+        payload:
+          $ref: "#/components/schemas/ClaimPayload"
+        evidence:
+          $ref: "#/components/schemas/ClaimEvidence"
+        tags:
+          type: array
+          items:
+            type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+        replaces_claim_id:
+          type: string
+          nullable: true
+
+    CreateExtractionRequest:
+      type: object
+      required: [claims]
+      properties:
+        claims:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ProposedClaimInput"
+
+    CreateExtractionResponse:
+      type: object
+      required: [session_id, claim_ids, confirmation_id]
+      properties:
+        session_id:
+          type: string
+        claim_ids:
+          type: array
+          items:
+            type: string
+        confirmation_id:
+          type: string
+
+    ConfirmationClaimView:
+      type: object
+      required:
+        - claim_id
+        - type
+        - op
+        - summary
+        - tags
+        - evidence_quote
+        - payload
+      properties:
+        claim_id:
+          type: string
+        type:
+          $ref: "#/components/schemas/ClaimType"
+        op:
+          $ref: "#/components/schemas/ClaimOp"
+        summary:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        evidence_quote:
+          type: string
+        payload:
+          $ref: "#/components/schemas/ClaimPayload"
+
+    ConfirmationItem:
+      type: object
+      required: [confirmation_id, session_id, person, claims]
+      properties:
+        confirmation_id:
+          type: string
+        session_id:
+          type: string
+        person:
+          type: object
+          required: [id, display_name]
+          properties:
+            id:
+              type: string
+            display_name:
+              type: string
+        claims:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/ConfirmationClaimView"
+
+    ListConfirmationsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfirmationItem"
+
+    ClaimDecisionPatch:
+      type: object
+      properties:
+        summary:
+          type: string
+          maxLength: 40
+        payload:
+          $ref: "#/components/schemas/ClaimPayload"
+        tags:
+          type: array
+          items:
+            type: string
+
+    ClaimDecision:
+      type: object
+      required: [claim_id, action]
+      properties:
+        claim_id:
+          type: string
+        action:
+          $ref: "#/components/schemas/DecisionAction"
+        selected_tags:
+          type: array
+          items:
+            type: string
+        patch:
+          $ref: "#/components/schemas/ClaimDecisionPatch"
+      description: |
+        When action is edit, patch must be present.
+        selected_tags overwrite Claim.tags on accept/edit.
+
+    DecideConfirmationRequest:
+      type: object
+      required: [via, decisions]
+      properties:
+        via:
+          $ref: "#/components/schemas/ConfirmVia"
+        decisions:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ClaimDecision"
+
+    DecideConfirmationResponse:
+      type: object
+      required: [person_id, applied, rejected, person_preview]
+      properties:
+        person_id:
+          type: string
+        applied:
+          type: array
+          items:
+            type: string
+        rejected:
+          type: array
+          items:
+            type: string
+        person_preview:
+          type: object
+          required: [open_commitments_count]
+          properties:
+            relationship_temperature:
+              allOf:
+                - $ref: "#/components/schemas/RelationshipTemperature"
+              nullable: true
+            open_commitments_count:
+              type: integer
+              minimum: 0
+
+    BriefCommitment:
+      type: object
+      required: [claim_id, summary, owner]
+      properties:
+        claim_id:
+          type: string
+        summary:
+          type: string
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        owner:
+          $ref: "#/components/schemas/CommitmentOwner"
+
+    BriefStance:
+      type: object
+      required: [claim_id, topic, position]
+      properties:
+        claim_id:
+          type: string
+        topic:
+          type: string
+        position:
+          type: string
+
+    BriefTaboo:
+      type: object
+      required: [claim_id, topic]
+      properties:
+        claim_id:
+          type: string
+        topic:
+          type: string
+        note:
+          type: string
+          nullable: true
+
+    PersonBrief:
+      type: object
+      required: [person, commitments, stances, taboos]
+      properties:
+        person:
+          type: object
+          required: [id, display_name]
+          properties:
+            id:
+              type: string
+            display_name:
+              type: string
+            relationship_temperature:
+              allOf:
+                - $ref: "#/components/schemas/RelationshipTemperature"
+              nullable: true
+        commitments:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefCommitment"
+        stances:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefStance"
+        taboos:
+          type: array
+          items:
+            $ref: "#/components/schemas/BriefTaboo"
+        last_session_at:
+          type: string
+          format: date-time
+          nullable: true
